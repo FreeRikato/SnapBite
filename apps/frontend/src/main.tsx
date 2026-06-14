@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "./index.css";
+import "@/index.css";
 import { BrowserRouter, Route, Routes } from "react-router";
-import App from "./App.tsx";
-import AuthPage from "./screens/Auth.Page.tsx";
-import BMIPage from "./screens/BMI.Page.tsx";
+import App from "@/App";
+import AuthPage from "@/screens/Auth.Page";
+import BMIPage from "@/screens/BMI.Page";
 
 const rootElement = document.getElementById("root");
 

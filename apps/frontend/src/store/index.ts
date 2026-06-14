@@ -1,1 +1,1 @@
-export { useBearStore } from "./useBearStore";
+export { useBMIStore } from "@/store/useBMIStore";
