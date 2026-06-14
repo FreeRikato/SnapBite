@@ -14,6 +14,9 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
+			"@repo/convex": fileURLToPath(
+				new URL("../../packages/convex", import.meta.url),
+			),
 		},
 	},
 	test: {
