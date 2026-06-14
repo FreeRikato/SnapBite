@@ -1,4 +1,28 @@
-import type { BmiCategory, CalorieModeInfo, Goal } from "@/types/bmi";
+import type { BmiCategory, CalorieModeInfo, Gender, Goal } from "@/types/bmi";
+
+type DailyCaloriesInput = {
+	height: number;
+	weight: number;
+	age: number;
+	gender: Gender;
+	goal: Goal | null;
+};
+
+export function computeDailyCalories({
+	height,
+	weight,
+	age,
+	gender,
+	goal,
+}: DailyCaloriesInput): number | null {
+	if (!height || !weight || height <= 0 || !age || !gender) return null;
+	const bmr =
+		10 * weight + 6.25 * height - 5 * age + (gender === "male" ? 5 : -161);
+	const tdee = bmr * 1.4;
+	if (goal === "lean") return Math.round(tdee - 500);
+	if (goal === "gain") return Math.round(tdee + 500);
+	return Math.round(tdee);
+}
 
 export function getBmiCategory(bmi: number): BmiCategory {
 	if (bmi < 18.5) return { label: "Underweight", color: "text-sky-300" };

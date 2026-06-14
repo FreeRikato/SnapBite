@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 
 import { BMIAvatarPreview } from "@/components/BMIAvatarPreview";
@@ -8,7 +8,11 @@ import { BMIResultsCard } from "@/components/BMIResultsCard";
 import { BMISubmitButton } from "@/components/BMISubmitButton";
 import { AVATAR_MAP } from "@/constants/bmi";
 import { useBMIStore } from "@/store";
-import { getBmiCategory, getCalorieModeInfo } from "@/utils/bmi";
+import {
+	computeDailyCalories,
+	getBmiCategory,
+	getCalorieModeInfo,
+} from "@/utils/bmi";
 
 type BMIPageLocationState = {
 	showBackButton?: boolean;
@@ -18,6 +22,8 @@ export default function BMIPage() {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const [searchParams] = useSearchParams();
+	const homeTransitionTimerRef = useRef<number | null>(null);
+	const [isTransitioningHome, setIsTransitioningHome] = useState(false);
 	const [isCalorieModeTooltipOpen, setIsCalorieModeTooltipOpen] =
 		useState(false);
 	const height = useBMIStore((state) => state.height);
@@ -43,17 +49,13 @@ export default function BMIPage() {
 
 	const dailyCalories = useMemo(() => {
 		if (!bmi || !ageNum || !gender) return null;
-		// Mifflin-St Jeor BMR
-		const bmr =
-			10 * weightNum +
-			6.25 * heightNum -
-			5 * ageNum +
-			(gender === "male" ? 5 : -161);
-		// Lightly active multiplier
-		const tdee = bmr * 1.4;
-		if (goal === "lean") return Math.round(tdee - 500);
-		if (goal === "gain") return Math.round(tdee + 500);
-		return Math.round(tdee);
+		return computeDailyCalories({
+			height: heightNum,
+			weight: weightNum,
+			age: ageNum,
+			gender,
+			goal,
+		});
 	}, [bmi, ageNum, gender, goal, heightNum, weightNum]);
 
 	const allFilled =
@@ -70,13 +72,31 @@ export default function BMIPage() {
 	const isBackButtonVisible =
 		routeState?.showBackButton === true || searchParams.get("mode") === "edit";
 
+	useEffect(() => {
+		return () => {
+			if (homeTransitionTimerRef.current !== null) {
+				window.clearTimeout(homeTransitionTimerRef.current);
+			}
+		};
+	}, []);
+
 	const handleSubmit = () => {
-		// hook up to your submit logic
-		navigate("/");
+		if (isTransitioningHome) return;
+
+		setIsTransitioningHome(true);
+		window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+
+		homeTransitionTimerRef.current = window.setTimeout(() => {
+			navigate("/", { replace: true, state: { fromBmi: true } });
+		}, 180);
 	};
 
 	return (
-		<div className="flex min-h-dvh w-full justify-center bg-neutral-950 px-4 py-6 text-white sm:px-6 sm:py-10">
+		<div
+			className={`bmi-route-page flex min-h-dvh w-full justify-center bg-neutral-950 px-4 py-6 text-white sm:px-6 sm:py-10 ${
+				isTransitioningHome ? "bmi-route-page-exit pointer-events-none" : ""
+			}`}
+		>
 			<div className="flex w-full max-w-md flex-col gap-5 sm:max-w-2xl sm:gap-6">
 				<BMIPageHeader
 					isBackButtonVisible={isBackButtonVisible}
