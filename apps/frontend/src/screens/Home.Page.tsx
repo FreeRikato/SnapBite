@@ -82,28 +82,30 @@ export default function HomePage() {
 	}
 
 	return (
-		<main
-			className={`flex min-h-dvh flex-col bg-neutral-950 pb-28 text-white ${
-				shouldAnimateEntry ? "home-route-enter" : ""
-			}`}
-		>
-			<HomeHeader streak={streak} monthLabel={monthLabel} />
-			<WeekCalendarScroller
-				days={days}
-				transitionDirection={weekTransitionDirection}
-				onSelect={setSelectedDate}
-				onPreviousWeek={showPreviousWeek}
-				onNextWeek={showNextWeek}
-			/>
-			<div className="flex flex-col gap-4 pt-2">
-				<CaloriesLeftCard
-					left={caloriesLeft}
-					target={target}
-					consumed={consumed}
+		<>
+			<main
+				className={`flex min-h-dvh flex-col bg-neutral-950 pb-28 text-white ${
+					shouldAnimateEntry ? "home-route-enter" : ""
+				}`}
+			>
+				<HomeHeader streak={streak} monthLabel={monthLabel} />
+				<WeekCalendarScroller
+					days={days}
+					transitionDirection={weekTransitionDirection}
+					onSelect={setSelectedDate}
+					onPreviousWeek={showPreviousWeek}
+					onNextWeek={showNextWeek}
 				/>
-				<RecentlyUploadedList meals={meals} />
-			</div>
+				<div className="flex flex-col gap-4 pt-2">
+					<CaloriesLeftCard
+						left={caloriesLeft}
+						target={target}
+						consumed={consumed}
+					/>
+					<RecentlyUploadedList meals={meals} />
+				</div>
+			</main>
 			<BottomNav onTakePhoto={() => window.alert("Take a photo")} />
-		</main>
+		</>
 	);
 }
