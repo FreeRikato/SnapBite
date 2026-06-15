@@ -1,23 +1,111 @@
 import { ArrowLeft, Camera, Images, RefreshCcw } from "lucide-react";
 import type { ChangeEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 type FacingMode = "environment" | "user";
+
+let activeCameraLeaseCount = 0;
+let cachedCameraStream: MediaStream | null = null;
+let cachedFacingMode: FacingMode | null = null;
+let cameraRequest: Promise<MediaStream> | null = null;
+let cameraRequestFacingMode: FacingMode | null = null;
+
+function stopMediaStream(mediaStream: MediaStream | null) {
+	mediaStream?.getTracks().forEach((track) => {
+		track.stop();
+	});
+}
+
+function stopCachedCameraStream() {
+	stopMediaStream(cachedCameraStream);
+	cachedCameraStream = null;
+	cachedFacingMode = null;
+}
+
+function requestCameraStream(facingMode: FacingMode) {
+	if (cachedCameraStream?.active && cachedFacingMode === facingMode) {
+		return Promise.resolve(cachedCameraStream);
+	}
+
+	if (cachedCameraStream) {
+		stopCachedCameraStream();
+	}
+
+	if (!cameraRequest || cameraRequestFacingMode !== facingMode) {
+		cameraRequestFacingMode = facingMode;
+		cameraRequest = navigator.mediaDevices
+			.getUserMedia({
+				video: { facingMode },
+				audio: false,
+			})
+			.then((mediaStream) => {
+				cachedCameraStream = mediaStream;
+				cachedFacingMode = facingMode;
+				return mediaStream;
+			})
+			.finally(() => {
+				cameraRequest = null;
+				cameraRequestFacingMode = null;
+
+				if (activeCameraLeaseCount === 0) {
+					stopCachedCameraStream();
+				}
+			});
+	}
+
+	return cameraRequest;
+}
+
+function createCameraLease(facingMode: FacingMode) {
+	let released = false;
+	activeCameraLeaseCount += 1;
+
+	return {
+		stream: requestCameraStream(facingMode),
+		release() {
+			if (released) return;
+			released = true;
+			activeCameraLeaseCount = Math.max(0, activeCameraLeaseCount - 1);
+
+			if (activeCameraLeaseCount === 0) {
+				stopCachedCameraStream();
+			}
+		},
+	};
+}
 
 export default function CapturePage() {
 	const navigate = useNavigate();
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const libraryInputRef = useRef<HTMLInputElement>(null);
+	const cameraLeaseRef = useRef<ReturnType<typeof createCameraLease> | null>(
+		null,
+	);
 	const [stream, setStream] = useState<MediaStream | null>(null);
 	const [facingMode, setFacingMode] = useState<FacingMode>("environment");
 	const [cameraError, setCameraError] = useState<string | null>(null);
+
+	const clearVideo = useCallback(() => {
+		if (!videoRef.current) return;
+		videoRef.current.pause();
+		videoRef.current.srcObject = null;
+	}, []);
+
+	const releaseCamera = useCallback((resetPreview = true) => {
+		cameraLeaseRef.current?.release();
+		cameraLeaseRef.current = null;
+		clearVideo();
+		if (resetPreview) {
+			setStream(null);
+		}
+	}, [clearVideo]);
 
 	useEffect(() => {
 		let active = true;
 
 		async function startCamera() {
-			setStream(null);
+			releaseCamera();
 			setCameraError(null);
 			if (!navigator.mediaDevices?.getUserMedia) {
 				setCameraError(
@@ -27,19 +115,16 @@ export default function CapturePage() {
 				);
 				return;
 			}
+
+			const lease = createCameraLease(facingMode);
+			cameraLeaseRef.current = lease;
+
 			try {
-				const mediaStream = await navigator.mediaDevices.getUserMedia({
-					video: { facingMode },
-					audio: false,
-				});
-				if (!active) {
-					mediaStream.getTracks().forEach((track) => {
-						track.stop();
-					});
-					return;
-				}
+				const mediaStream = await lease.stream;
+				if (!active) return;
 				setStream(mediaStream);
 			} catch (err) {
+				if (!active) return;
 				setCameraError(
 					err instanceof Error ? err.message : "Unable to start live camera",
 				);
@@ -50,16 +135,9 @@ export default function CapturePage() {
 
 		return () => {
 			active = false;
-			setStream((current) => {
-				if (current) {
-					current.getTracks().forEach((track) => {
-						track.stop();
-					});
-				}
-				return null;
-			});
+			releaseCamera(false);
 		};
-	}, [facingMode]);
+	}, [facingMode, releaseCamera]);
 
 	useEffect(() => {
 		if (videoRef.current && stream) {
@@ -85,6 +163,7 @@ export default function CapturePage() {
 	}
 
 	function closeCapture() {
+		releaseCamera();
 		navigate("/");
 	}
 

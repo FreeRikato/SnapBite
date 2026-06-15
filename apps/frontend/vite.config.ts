@@ -30,4 +30,7 @@ export default defineConfig({
 		},
 		setupFiles: ["./src/setupTests.ts"],
 	},
+	server: {
+		allowedHosts: ["omarikato.tail613164.ts.net", ".ts.net"],
+	},
 });
