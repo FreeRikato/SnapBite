@@ -1,0 +1,24 @@
+{
+	"name": "serverless-backend",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"check-types": "tsc --noEmit",
+		"ci": "bun run check-types && bun run test",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.16.15",
+		"@types/node": "^25.9.3",
+		"@vitest/runner": "^4.1.8",
+		"@vitest/snapshot": "^4.1.8",
+		"typescript": "^5.5.2",
+		"vitest": "^4.1.8",
+		"wrangler": "^4.100.0"
+	}
+}

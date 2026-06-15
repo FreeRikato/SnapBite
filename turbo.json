@@ -19,6 +19,9 @@
     "check-types": {
       "dependsOn": ["^check-types"]
     },
+    "cf-typegen": {
+      "cache": false
+    },
     "dev": {
       "cache": false,
       "persistent": true
