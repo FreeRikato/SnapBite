@@ -105,7 +105,7 @@ export default function HomePage() {
 					<RecentlyUploadedList meals={meals} />
 				</div>
 			</main>
-			<BottomNav onTakePhoto={() => window.alert("Take a photo")} />
+			<BottomNav />
 		</>
 	);
 }

@@ -6,6 +6,7 @@ import "@/index.css";
 import { BrowserRouter, Route, Routes } from "react-router";
 import AuthPage from "@/screens/Auth.Page";
 import BMIPage from "@/screens/BMI.Page";
+import CapturePage from "@/screens/Capture.Page";
 import HomePage from "@/screens/Home.Page";
 
 const rootElement = document.getElementById("root");
@@ -29,6 +30,7 @@ createRoot(rootElement).render(
 					<Route index element={<HomePage />} />
 					<Route path="login" element={<AuthPage />} />
 					<Route path="bmi-calculate" element={<BMIPage />} />
+					<Route path="capture" element={<CapturePage />} />
 				</Routes>
 			</BrowserRouter>
 		</ConvexAuthProvider>
