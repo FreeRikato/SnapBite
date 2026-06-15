@@ -1,0 +1,38 @@
+name: Deploy Frontend
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        run: bun run build
+        working-directory: apps/frontend
+        env:
+          VITE_CONVEX_URL: https://marvelous-poodle-281.convex.cloud
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/frontend/dist --project-name=snapbite --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
