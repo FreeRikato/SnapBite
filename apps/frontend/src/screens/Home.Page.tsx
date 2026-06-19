@@ -1,4 +1,6 @@
-import { useLayoutEffect, useMemo, useState } from "react";
+import { api } from "@repo/convex/convex/_generated/api";
+import { useQuery } from "convex/react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router";
 
 import { BottomNav } from "@/components/BottomNav";
@@ -7,6 +9,7 @@ import { HomeHeader } from "@/components/HomeHeader";
 import { RecentlyUploadedList } from "@/components/RecentlyUploadedList";
 import { WeekCalendarScroller } from "@/components/WeekCalendarScroller";
 import { DAYS_IN_WEEK, FALLBACK_TARGET } from "@/constants/home";
+import { hydrateMealLocalPhotoUrls, mealRecordToMeal } from "@/lib/mealRecords";
 import { useBMIStore, useHomeStore } from "@/store";
 import type {
 	HomePageLocationState,
@@ -24,9 +27,12 @@ import {
 export default function HomePage() {
 	const location = useLocation();
 	const streak = useHomeStore((state) => state.streak);
-	const consumed = useHomeStore((state) => state.consumed);
-	const meals = useHomeStore((state) => state.meals);
+	const selectedDate = useHomeStore((state) => state.selectedDate);
 	const setSelectedDate = useHomeStore((state) => state.setSelectedDate);
+	const recentMealRecords = useQuery(api.meals.listRecent, { limit: 40 });
+	const pendingMeals = useHomeStore((state) => state.pendingMeals);
+	const cachedRecentMeals = useHomeStore((state) => state.recentMeals);
+	const setRecentMeals = useHomeStore((state) => state.setRecentMeals);
 
 	const height = useBMIStore((state) => state.height);
 	const weight = useBMIStore((state) => state.weight);
@@ -50,6 +56,11 @@ export default function HomePage() {
 	}, [age, gender, goal, height, weight]);
 
 	const today = useMemo(() => new Date(), []);
+	const freshMeals = useMemo(
+		() => recentMealRecords?.map(mealRecordToMeal) ?? [],
+		[recentMealRecords],
+	);
+	const meals = recentMealRecords === undefined ? cachedRecentMeals : freshMeals;
 	const [weekStart, setWeekStart] = useState(() => startOfWeek(today));
 	const [weekTransitionDirection, setWeekTransitionDirection] =
 		useState<WeekTransitionDirection>("next");
@@ -65,11 +76,51 @@ export default function HomePage() {
 	);
 	const routeState = location.state as HomePageLocationState | null;
 	const shouldAnimateEntry = routeState?.fromBmi === true;
+	const consumed = useMemo(
+		() =>
+			meals
+				.filter(
+					(meal) =>
+						meal.status === "saved" &&
+						toIsoDate(new Date(meal.uploadedAt)) === selectedDate,
+				)
+				.reduce((total, meal) => total + meal.kcal, 0),
+		[meals, selectedDate],
+	);
 	const caloriesLeft = Math.max(0, target - consumed);
 
 	useLayoutEffect(() => {
 		window.scrollTo({ top: 0, left: 0, behavior: "auto" });
 	}, []);
+
+	useEffect(() => {
+		if (!recentMealRecords) return;
+		setRecentMeals(freshMeals);
+	}, [freshMeals, recentMealRecords, setRecentMeals]);
+
+	useEffect(() => {
+		if (cachedRecentMeals.length === 0) return;
+
+		let active = true;
+		hydrateMealLocalPhotoUrls(cachedRecentMeals).then((hydratedMeals) => {
+			const changed = hydratedMeals.some((meal, index) => {
+				const current = cachedRecentMeals[index];
+				return (
+					current &&
+					(meal.thumbnail !== current.thumbnail ||
+						meal.photos.some((photo, photoIndex) => photo !== current.photos[photoIndex]))
+				);
+			});
+
+			if (active && changed) {
+				setRecentMeals(hydratedMeals);
+			}
+		});
+
+		return () => {
+			active = false;
+		};
+	}, [cachedRecentMeals, setRecentMeals]);
 
 	function showPreviousWeek() {
 		setWeekTransitionDirection("previous");
@@ -102,7 +153,7 @@ export default function HomePage() {
 						target={target}
 						consumed={consumed}
 					/>
-					<RecentlyUploadedList meals={meals} />
+					<RecentlyUploadedList meals={meals} pendingMeals={pendingMeals} />
 				</div>
 			</main>
 			<BottomNav />

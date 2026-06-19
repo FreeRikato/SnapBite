@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useBMIStore } from "@/store/useBMIStore";
+import { useBMIStore } from "@/store";
 
 const emptyBMIState = {
 	age: "",

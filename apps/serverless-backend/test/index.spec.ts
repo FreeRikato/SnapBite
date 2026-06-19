@@ -36,6 +36,31 @@ describe('meal photo worker', () => {
 		expect(response.headers.get('Access-Control-Allow-Methods')).toContain('POST');
 	});
 
+	it('allows DELETE preflight from allowed origin (regression)', async () => {
+		const response = await fetchWorker(
+			new IncomingRequest('http://example.com/images', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: allowedOrigin,
+					'Access-Control-Request-Method': 'DELETE',
+					'Access-Control-Request-Headers': 'content-type,x-user-id,x-debug-id',
+				},
+			}),
+		);
+
+		expect(response.status).toBe(204);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
+		const allowMethods = (response.headers.get('Access-Control-Allow-Methods') ?? '')
+			.split(',')
+			.map((s) => s.trim().toUpperCase());
+		const allowHeaders = (response.headers.get('Access-Control-Allow-Headers') ?? '')
+			.split(',')
+			.map((s) => s.trim());
+		expect(allowMethods).toContain('DELETE');
+		expect(allowHeaders).toContain('X-Debug-Id');
+	});
+
+
 	it('rejects disallowed preflight origins', async () => {
 		const response = await fetchWorker(
 			new IncomingRequest('http://example.com/upload', {

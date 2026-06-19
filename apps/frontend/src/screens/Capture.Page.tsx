@@ -1,7 +1,17 @@
-import { ArrowLeft, Camera, Images, RefreshCcw } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+
+import { CaptureCameraPreview } from "@/components/CaptureCameraPreview";
+import { CaptureControls } from "@/components/CaptureControls";
+import { CaptureHeader } from "@/components/CaptureHeader";
+import {
+	createPreviewUrl,
+	saveCapturePhotoBlob,
+} from "@/lib/photoBlobStore";
+import { resizeMealPhoto } from "@/lib/resizeMealPhoto";
+import type { CapturedPhoto } from "@/store";
+import { useCaptureStore } from "@/store";
 
 type FacingMode = "environment" | "user";
 
@@ -21,6 +31,38 @@ function stopCachedCameraStream() {
 	stopMediaStream(cachedCameraStream);
 	cachedCameraStream = null;
 	cachedFacingMode = null;
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement) {
+	return new Promise<Blob>((resolve, reject) => {
+		canvas.toBlob(
+			(blob) => {
+				if (!blob) {
+					reject(new Error("Unable to capture photo"));
+					return;
+				}
+				resolve(blob);
+			},
+			"image/jpeg",
+			0.9,
+		);
+	});
+}
+
+async function preparePhotoFile(file: File, id: string): Promise<CapturedPhoto> {
+	const resized = await resizeMealPhoto(file);
+	const blobKey = `capture-${id}`;
+	await saveCapturePhotoBlob(blobKey, resized.file);
+
+	return {
+		id,
+		blobKey,
+		previewObjectUrl: await createPreviewUrl(blobKey, resized.file),
+		width: resized.width,
+		height: resized.height,
+		size: resized.resizedBytes,
+		mimeType: resized.mimeType,
+	};
 }
 
 function requestCameraStream(facingMode: FacingMode) {
@@ -85,6 +127,10 @@ export default function CapturePage() {
 	const [stream, setStream] = useState<MediaStream | null>(null);
 	const [facingMode, setFacingMode] = useState<FacingMode>("environment");
 	const [cameraError, setCameraError] = useState<string | null>(null);
+	const [capturing, setCapturing] = useState(false);
+	const photoCount = useCaptureStore((state) => state.photos.length);
+	const addPhotos = useCaptureStore((state) => state.addPhotos);
+	const clearPhotos = useCaptureStore((state) => state.clearPhotos);
 
 	const clearVideo = useCallback(() => {
 		if (!videoRef.current) return;
@@ -92,14 +138,17 @@ export default function CapturePage() {
 		videoRef.current.srcObject = null;
 	}, []);
 
-	const releaseCamera = useCallback((resetPreview = true) => {
-		cameraLeaseRef.current?.release();
-		cameraLeaseRef.current = null;
-		clearVideo();
-		if (resetPreview) {
-			setStream(null);
-		}
-	}, [clearVideo]);
+	const releaseCamera = useCallback(
+		(resetPreview = true) => {
+			cameraLeaseRef.current?.release();
+			cameraLeaseRef.current = null;
+			clearVideo();
+			if (resetPreview) {
+				setStream(null);
+			}
+		},
+		[clearVideo],
+	);
 
 	useEffect(() => {
 		let active = true;
@@ -146,24 +195,42 @@ export default function CapturePage() {
 	}, [stream]);
 
 	async function capturePhoto() {
+		if (capturing) return;
 		const video = videoRef.current;
 		if (!video?.videoWidth) return;
+		setCapturing(true);
 		const canvas = document.createElement("canvas");
 		canvas.width = video.videoWidth;
 		canvas.height = video.videoHeight;
 		const ctx = canvas.getContext("2d");
-		if (!ctx) return;
-		ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-		const blob = await new Promise<Blob | null>((resolve) =>
-			canvas.toBlob(resolve, "image/jpeg", 0.9),
-		);
-		if (blob) {
-			console.log("Captured photo:", blob);
+		if (!ctx) {
+			setCapturing(false);
+			return;
+		}
+		try {
+			ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+			const blob = await canvasToBlob(canvas);
+			const file = new File([blob], `capture-${Date.now()}.jpg`, {
+				type: "image/jpeg",
+				lastModified: Date.now(),
+			});
+			const photo = await preparePhotoFile(
+				file,
+				`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			);
+			addPhotos([photo]);
+		} catch (err) {
+			setCameraError(
+				err instanceof Error ? err.message : "Unable to capture photo",
+			);
+		} finally {
+			setCapturing(false);
 		}
 	}
 
 	function closeCapture() {
 		releaseCamera();
+		clearPhotos();
 		navigate("/");
 	}
 
@@ -177,80 +244,58 @@ export default function CapturePage() {
 		libraryInputRef.current?.click();
 	}
 
-	function handleLibraryChange(event: ChangeEvent<HTMLInputElement>) {
+	async function handleLibraryChange(event: ChangeEvent<HTMLInputElement>) {
 		const files = event.target.files;
 		if (!files || files.length === 0) return;
 		const selected = Array.from(files);
-		console.log("Selected from library:", selected);
-		event.target.value = "";
+		try {
+			const photos: CapturedPhoto[] = await Promise.all(
+				selected.map((file) =>
+					preparePhotoFile(
+						file,
+						`lib-${file.name}-${file.lastModified}-${file.size}`,
+					),
+				),
+			);
+			addPhotos(photos);
+			event.target.value = "";
+			navigate("/preview");
+		} catch (err) {
+			setCameraError(
+				err instanceof Error ? err.message : "Unable to read selected image",
+			);
+		}
+	}
+
+	function goToPreview() {
+		releaseCamera();
+		navigate("/preview");
 	}
 
 	return (
 		<main className="fixed inset-0 z-30 flex flex-col bg-black text-white">
-			{stream ? (
-				<video
-					ref={videoRef}
-					autoPlay
-					playsInline
-					muted
-					className="absolute inset-0 h-full w-full object-cover"
-				/>
-			) : (
-				<div className="absolute inset-0 flex flex-col items-center justify-center bg-neutral-950 px-8 text-center">
-					<Camera size={56} className="mb-5 text-white/20" />
-					{cameraError && (
-						<p className="max-w-sm text-sm leading-6 text-white/70">
-							{cameraError}
-						</p>
-					)}
-				</div>
-			)}
+			<CaptureCameraPreview
+				videoRef={videoRef}
+				hasStream={Boolean(stream)}
+				cameraError={cameraError}
+			/>
 
 			<div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/70" />
 
-			<header className="relative z-10 flex items-start justify-between px-5 pt-[max(1.25rem,env(safe-area-inset-top))]">
-				<button
-					type="button"
-					onClick={closeCapture}
-					aria-label="Back"
-					className="flex size-11 items-center justify-center rounded-full bg-black/35 text-white backdrop-blur-md transition active:scale-95"
-				>
-					<ArrowLeft size={24} strokeWidth={2.4} />
-				</button>
-			</header>
+			<CaptureHeader
+				photoCount={photoCount}
+				onClose={closeCapture}
+				onClearPhotos={clearPhotos}
+				onGoToPreview={goToPreview}
+			/>
 
 			<div className="flex-1" />
 
-			<footer className="relative z-10 px-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
-				<div className="flex items-center justify-center gap-10">
-					<button
-						type="button"
-						onClick={openLibrary}
-						aria-label="Upload from photo library"
-						className="flex size-14 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition active:scale-95"
-					>
-						<Images size={25} strokeWidth={2.2} />
-					</button>
-
-					<button
-						type="button"
-						onClick={capturePhoto}
-						aria-label="Capture photo"
-						className="flex size-20 items-center justify-center rounded-full border-4 border-white bg-white/20 transition active:scale-95"
-					>
-						<span className="size-14 rounded-full bg-white" />
-					</button>
-
-					<button
-						type="button"
-						onClick={flipCamera}
-						aria-label="Change camera"
-						className="flex size-14 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition active:scale-95"
-					>
-						<RefreshCcw size={25} strokeWidth={2.2} />
-					</button>
-				</div>
-			</footer>
+			<CaptureControls
+				onOpenLibrary={openLibrary}
+				onCapturePhoto={capturePhoto}
+				onFlipCamera={flipCamera}
+			/>
 
 			<input
 				ref={libraryInputRef}

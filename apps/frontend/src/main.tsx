@@ -7,7 +7,12 @@ import { BrowserRouter, Route, Routes } from "react-router";
 import AuthPage from "@/screens/Auth.Page";
 import BMIPage from "@/screens/BMI.Page";
 import CapturePage from "@/screens/Capture.Page";
+import ClarifyPage from "@/screens/Clarify.Page";
+import ClarifyLoadingPage from "@/screens/ClarifyLoading.Page";
 import HomePage from "@/screens/Home.Page";
+import MealPreviewPage from "@/screens/MealPreview.Page";
+import PhotoPreviewPage from "@/screens/PhotoPreview.Page";
+import ResultPage from "@/screens/Result.Page";
 
 const rootElement = document.getElementById("root");
 const convexUrl = import.meta.env.VITE_CONVEX_URL;
@@ -31,6 +36,11 @@ createRoot(rootElement).render(
 					<Route path="login" element={<AuthPage />} />
 					<Route path="bmi-calculate" element={<BMIPage />} />
 					<Route path="capture" element={<CapturePage />} />
+					<Route path="preview" element={<PhotoPreviewPage />} />
+					<Route path="clarify-loading" element={<ClarifyLoadingPage />} />
+					<Route path="clarify" element={<ClarifyPage />} />
+					<Route path="result" element={<ResultPage />} />
+					<Route path="meals/:mealId" element={<MealPreviewPage />} />
 				</Routes>
 			</BrowserRouter>
 		</ConvexAuthProvider>

@@ -1,10 +1,18 @@
+import { AwsClient } from 'aws4fetch';
+
 const MAX_UPLOAD_BYTES = 1_500_000;
+const PRESIGNED_UPLOAD_EXPIRES_SECONDS = 300;
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/webp', 'image/jpeg', 'image/png']);
 
 type JsonBody = Record<string, unknown>;
 
-type BodyReadResult = { ok: true; body: Uint8Array } | { ok: false; reason: 'empty' | 'too-large' };
+type R2SigningEnv = Env & {
+	R2_ACCOUNT_ID: string;
+	R2_ACCESS_KEY_ID: string;
+	R2_BUCKET_NAME: string;
+	R2_SECRET_ACCESS_KEY: string;
+};
 
 function parseAllowedOrigins(env: Env): string[] {
 	return env.ALLOWED_ORIGINS.split(',')
@@ -25,8 +33,9 @@ function getAllowedCorsOrigin(request: Request, env: Env): string | null {
 function buildCorsHeaders(origin: string): Headers {
 	return new Headers({
 		'Access-Control-Allow-Origin': origin,
-		'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-		'Access-Control-Allow-Headers': 'Content-Type, X-User-Id',
+		'Access-Control-Allow-Methods': 'POST, GET, PUT, DELETE, OPTIONS',
+		'Access-Control-Allow-Headers': 'Content-Type, X-User-Id, X-Debug-Id',
+		'Access-Control-Expose-Headers': 'ETag',
 		'Access-Control-Max-Age': '86400',
 		Vary: 'Origin',
 	});
@@ -53,10 +62,6 @@ function safeId(value: string): string {
 	return value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
 }
 
-function getNormalizedContentType(request: Request): string {
-	return request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() ?? '';
-}
-
 function getExtension(contentType: string): string {
 	if (contentType === 'image/jpeg') {
 		return 'jpg';
@@ -69,60 +74,73 @@ function getExtension(contentType: string): string {
 	return 'webp';
 }
 
-function isRequestTooLarge(request: Request): boolean {
-	const contentLength = request.headers.get('Content-Length');
+function getR2SigningEnv(env: Env): R2SigningEnv {
+	return env as R2SigningEnv;
+}
 
-	if (!contentLength) {
-		return false;
-	}
+function hasR2SigningConfig(env: Env): env is R2SigningEnv {
+	const signingEnv = getR2SigningEnv(env);
+	return Boolean(
+		signingEnv.R2_ACCOUNT_ID &&
+			signingEnv.R2_ACCESS_KEY_ID &&
+			signingEnv.R2_BUCKET_NAME &&
+			signingEnv.R2_SECRET_ACCESS_KEY,
+	);
+}
 
-	const bytes = Number(contentLength);
-	return Number.isFinite(bytes) && bytes > MAX_UPLOAD_BYTES;
+function getR2S3Url(env: R2SigningEnv, key: string): string {
+	const accountId = encodeURIComponent(env.R2_ACCOUNT_ID);
+	const bucketName = encodeURIComponent(env.R2_BUCKET_NAME);
+	const encodedKey = key
+		.split('/')
+		.map((part) => encodeURIComponent(part))
+		.join('/');
+
+	return `https://${accountId}.r2.cloudflarestorage.com/${bucketName}/${encodedKey}`;
 }
 
 function isSafeImageKey(key: string): boolean {
 	return /^users\/[a-zA-Z0-9_-]+\/meals\/\d{4}-\d{2}-\d{2}\/[a-f0-9-]+\.(webp|jpg|png)$/.test(key);
 }
 
-async function readUploadBody(request: Request): Promise<BodyReadResult> {
-	if (!request.body) {
-		return { ok: false, reason: 'empty' };
+function serializeError(error: unknown): JsonBody {
+	if (error instanceof Error) {
+		return {
+			name: error.name,
+			message: error.message,
+			stack: error.stack,
+		};
 	}
 
-	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
+	return {
+		message: String(error),
+	};
+}
 
-	while (true) {
-		const { done, value } = await reader.read();
+function logDelete(level: 'info' | 'warn' | 'error', event: string, data: JsonBody): void {
+	const payload = {
+		source: 'snapbite.worker',
+		operation: 'delete-images',
+		event,
+		...data,
+	};
 
-		if (done) {
-			break;
-		}
-
-		totalBytes += value.byteLength;
-
-		if (totalBytes > MAX_UPLOAD_BYTES) {
-			await reader.cancel();
-			return { ok: false, reason: 'too-large' };
-		}
-
-		chunks.push(value);
+	if (level === 'error') {
+		console.error(payload);
+	} else if (level === 'warn') {
+		console.warn(payload);
+	} else {
+		console.log(payload);
 	}
+}
 
-	if (totalBytes === 0) {
-		return { ok: false, reason: 'empty' };
+async function readJsonBody(request: Request): Promise<JsonBody | null> {
+	try {
+		const body = await request.json();
+		return body && typeof body === 'object' && !Array.isArray(body) ? (body as JsonBody) : null;
+	} catch {
+		return null;
 	}
-
-	const body = new Uint8Array(totalBytes);
-	let offset = 0;
-
-	for (const chunk of chunks) {
-		body.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-
-	return { ok: true, body };
 }
 
 export default {
@@ -148,7 +166,11 @@ export default {
 			return json({ error: 'Origin is not allowed' }, 403);
 		}
 
-		if (url.pathname === '/upload' && request.method === 'POST') {
+		if (url.pathname === '/upload-url' && request.method === 'POST') {
+			return handleCreateUploadUrl(request, env, corsOrigin ?? undefined);
+		}
+
+		if (url.pathname === '/upload' && request.method === 'PUT') {
 			return handleUpload(request, env, corsOrigin ?? undefined);
 		}
 
@@ -156,12 +178,23 @@ export default {
 			return handleGetImage(request, env, corsOrigin ?? undefined);
 		}
 
+		if (url.pathname === '/images' && request.method === 'DELETE') {
+			return handleDeleteImages(request, env, corsOrigin ?? undefined);
+		}
+
 		return json({ error: 'Not found' }, 404, corsOrigin ?? undefined);
 	},
 } satisfies ExportedHandler<Env>;
 
-async function handleUpload(request: Request, env: Env, corsOrigin?: string): Promise<Response> {
-	const contentType = getNormalizedContentType(request);
+async function handleCreateUploadUrl(request: Request, env: Env, corsOrigin?: string): Promise<Response> {
+	const requestBody = await readJsonBody(request);
+
+	if (!requestBody) {
+		return json({ error: 'JSON body is required' }, 400, corsOrigin);
+	}
+
+	const contentType = typeof requestBody.contentType === 'string' ? requestBody.contentType.toLowerCase() : '';
+	const size = typeof requestBody.size === 'number' ? requestBody.size : Number(requestBody.size);
 
 	if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
 		return json(
@@ -174,7 +207,11 @@ async function handleUpload(request: Request, env: Env, corsOrigin?: string): Pr
 		);
 	}
 
-	if (isRequestTooLarge(request)) {
+	if (!Number.isFinite(size) || size <= 0) {
+		return json({ error: 'Image size is required' }, 400, corsOrigin);
+	}
+
+	if (size > MAX_UPLOAD_BYTES) {
 		return json(
 			{
 				error: 'Image is too large. Resize/compress before upload.',
@@ -184,29 +221,6 @@ async function handleUpload(request: Request, env: Env, corsOrigin?: string): Pr
 			corsOrigin,
 		);
 	}
-
-	const readResult = await readUploadBody(request);
-
-	if (!readResult.ok && readResult.reason === 'empty') {
-		return json({ error: 'Image body is required' }, 400, corsOrigin);
-	}
-
-	if (!readResult.ok && readResult.reason === 'too-large') {
-		return json(
-			{
-				error: 'Image is too large. Resize/compress before upload.',
-				maxBytes: MAX_UPLOAD_BYTES,
-			},
-			413,
-			corsOrigin,
-		);
-	}
-
-	if (!readResult.ok) {
-		return json({ error: 'Upload failed' }, 500, corsOrigin);
-	}
-
-	const body = readResult.body;
 
 	const rawUserId = request.headers.get('X-User-Id') || 'demo-user';
 	const userId = safeId(rawUserId) || 'demo-user';
@@ -214,31 +228,110 @@ async function handleUpload(request: Request, env: Env, corsOrigin?: string): Pr
 	const dateFolder = now.toISOString().slice(0, 10);
 	const key = `users/${userId}/meals/${dateFolder}/${crypto.randomUUID()}.${getExtension(contentType)}`;
 
-	const object = await env.MEAL_PHOTOS.put(key, body, {
-		httpMetadata: {
-			contentType,
-			cacheControl: 'private, max-age=31536000',
-		},
-		customMetadata: {
-			uploadedAt: now.toISOString(),
-			app: 'snapbite',
-		},
-	});
+	if (!hasR2SigningConfig(env)) {
+		const directUploadUrl = new URL(request.url);
+		directUploadUrl.pathname = '/upload';
+		directUploadUrl.search = new URLSearchParams({ key }).toString();
 
-	if (!object) {
-		return json({ error: 'Upload failed' }, 500, corsOrigin);
+		return json(
+			{
+				key,
+				uploadUrl: directUploadUrl.toString(),
+				method: 'PUT',
+				headers: {
+					'Content-Type': contentType,
+				},
+				expiresIn: PRESIGNED_UPLOAD_EXPIRES_SECONDS,
+				maxBytes: MAX_UPLOAD_BYTES,
+			},
+			201,
+			corsOrigin,
+		);
 	}
+
+	const signingEnv = getR2SigningEnv(env);
+	const uploadUrl = getR2S3Url(signingEnv, key);
+	const signer = new AwsClient({
+		accessKeyId: signingEnv.R2_ACCESS_KEY_ID,
+		secretAccessKey: signingEnv.R2_SECRET_ACCESS_KEY,
+		service: 's3',
+		region: 'auto',
+	});
+	const signedRequest = await signer.sign(
+		new Request(`${uploadUrl}?X-Amz-Expires=${PRESIGNED_UPLOAD_EXPIRES_SECONDS}`, {
+			method: 'PUT',
+			headers: {
+				'Content-Type': contentType,
+			},
+		}),
+		{ aws: { allHeaders: true, signQuery: true } },
+	);
 
 	return json(
 		{
-			key: object.key,
-			size: object.size,
-			etag: object.etag,
-			httpEtag: object.httpEtag,
+			key,
+			uploadUrl: signedRequest.url,
+			method: 'PUT',
+			headers: {
+				'Content-Type': contentType,
+			},
+			expiresIn: PRESIGNED_UPLOAD_EXPIRES_SECONDS,
+			maxBytes: MAX_UPLOAD_BYTES,
 		},
 		201,
 		corsOrigin,
 	);
+}
+
+async function handleUpload(request: Request, env: Env, corsOrigin?: string): Promise<Response> {
+	const url = new URL(request.url);
+	const key = url.searchParams.get('key');
+	const contentType = request.headers.get('Content-Type')?.toLowerCase() ?? '';
+	const contentLength = Number(request.headers.get('Content-Length') ?? 0);
+
+	if (!key) {
+		return json({ error: 'Missing key' }, 400, corsOrigin);
+	}
+
+	if (!isSafeImageKey(key)) {
+		return json({ error: 'Invalid image key' }, 400, corsOrigin);
+	}
+
+	if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
+		return json({ error: 'Unsupported image type' }, 415, corsOrigin);
+	}
+
+	if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
+		return json(
+			{
+				error: 'Image is too large. Resize/compress before upload.',
+				maxBytes: MAX_UPLOAD_BYTES,
+			},
+			413,
+			corsOrigin,
+		);
+	}
+
+	if (!request.body) {
+		return json({ error: 'Image body is required' }, 400, corsOrigin);
+	}
+
+	const object = await env.MEAL_PHOTOS.put(key, request.body, {
+		httpMetadata: {
+			contentType,
+		},
+	});
+	const headers = new Headers({
+		ETag: object.httpEtag,
+	});
+
+	if (corsOrigin) {
+		for (const [header, value] of buildCorsHeaders(corsOrigin)) {
+			headers.set(header, value);
+		}
+	}
+
+	return new Response(null, { status: 201, headers });
 }
 
 async function handleGetImage(request: Request, env: Env, corsOrigin?: string): Promise<Response> {
@@ -260,7 +353,7 @@ async function handleGetImage(request: Request, env: Env, corsOrigin?: string): 
 	}
 
 	const headers = new Headers({
-		'Cache-Control': 'private, max-age=3600',
+		'Cache-Control': 'private, max-age=31536000, immutable',
 		ETag: object.httpEtag,
 	});
 
@@ -277,4 +370,96 @@ async function handleGetImage(request: Request, env: Env, corsOrigin?: string): 
 	}
 
 	return new Response(object.body, { headers });
+}
+
+async function handleDeleteImages(request: Request, env: Env, corsOrigin?: string): Promise<Response> {
+	const debugId = request.headers.get('X-Debug-Id') ?? crypto.randomUUID();
+	const requestBody = await readJsonBody(request);
+
+	if (!requestBody) {
+		logDelete('warn', 'invalid-json-body', {
+			debugId,
+			hasCorsOrigin: Boolean(corsOrigin),
+		});
+		return json({ error: 'JSON body is required' }, 400, corsOrigin);
+	}
+
+	const keys = Array.isArray(requestBody.keys)
+		? requestBody.keys
+				.filter((key): key is string => typeof key === 'string')
+				.map((key) => key.trim())
+				.filter(Boolean)
+		: [];
+	const uniqueKeys = Array.from(new Set(keys));
+	const rawUserId = request.headers.get('X-User-Id') || 'demo-user';
+	const userId = safeId(rawUserId) || 'demo-user';
+
+	logDelete('info', 'request-received', {
+		debugId,
+		rawKeyCount: keys.length,
+		uniqueKeyCount: uniqueKeys.length,
+		userId,
+		keys: uniqueKeys,
+	});
+
+	if (uniqueKeys.length === 0) {
+		logDelete('warn', 'no-keys', {
+			debugId,
+			userId,
+		});
+		return json({ error: 'At least one image key is required' }, 400, corsOrigin);
+	}
+
+	const invalidKey = uniqueKeys.find((key) => !isSafeImageKey(key));
+
+	if (invalidKey) {
+		logDelete('warn', 'invalid-key', {
+			debugId,
+			userId,
+			invalidKey,
+			keys: uniqueKeys,
+		});
+		return json({ error: 'Invalid image key' }, 400, corsOrigin);
+	}
+
+	const userPrefix = `users/${userId}/`;
+	const unauthorizedKey = uniqueKeys.find((key) => !key.startsWith(userPrefix));
+
+	if (unauthorizedKey) {
+		logDelete('warn', 'unauthorized-key', {
+			debugId,
+			userId,
+			userPrefix,
+			unauthorizedKey,
+			keys: uniqueKeys,
+		});
+		return json({ error: 'Image key is not owned by this user' }, 403, corsOrigin);
+	}
+
+	try {
+		logDelete('info', 'r2-delete-started', {
+			debugId,
+			userId,
+			keyCount: uniqueKeys.length,
+			keys: uniqueKeys,
+		});
+		await env.MEAL_PHOTOS.delete(uniqueKeys);
+		logDelete('info', 'r2-delete-complete', {
+			debugId,
+			userId,
+			keyCount: uniqueKeys.length,
+			keys: uniqueKeys,
+		});
+	} catch (error) {
+		logDelete('error', 'r2-delete-failed', {
+			debugId,
+			userId,
+			keyCount: uniqueKeys.length,
+			keys: uniqueKeys,
+			error: serializeError(error),
+		});
+		return json({ error: 'Failed to delete images' }, 500, corsOrigin);
+	}
+
+	return json({ deleted: uniqueKeys.length }, 200, corsOrigin);
 }

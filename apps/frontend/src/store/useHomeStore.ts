@@ -1,19 +1,37 @@
+import { del, get, set } from "idb-keyval";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import type { StateStorage } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
-import analyzed from "@/assets/examples/analyzed.png";
-import foodDb from "@/assets/examples/food-db.png";
-import heroImage from "@/assets/examples/hero-image.webp";
+import type { FoodItem } from "@/types/analysis";
+
+const indexedDbStorage: StateStorage = {
+	getItem: async (name) => (await get(name)) ?? null,
+	setItem: async (name, value) => {
+		await set(name, value);
+	},
+	removeItem: async (name) => {
+		await del(name);
+	},
+};
 
 export type Meal = {
 	id: string;
 	thumbnail: string;
+	photos: string[];
+	thumbnailKey?: string | null;
+	photoKeys?: string[];
 	name: string;
+	status: "saved" | "draft";
 	kcal: number;
 	protein: number;
 	carbs: number;
 	fat: number;
 	uploadedAt: string;
+	foodItems: FoodItem[];
+	pending?: true;
+	error?: string | null;
+	progress?: number;
 };
 
 type HomeState = {
@@ -21,135 +39,91 @@ type HomeState = {
 	setSelectedDate: (iso: string) => void;
 	streak: number;
 	setStreak: (n: number) => void;
-	consumed: number;
-	setConsumed: (n: number) => void;
-	meals: Meal[];
-};
-
-const DUMMY_MEALS: Meal[] = [
-	{
-		id: "meal-1",
-		thumbnail: foodDb,
-		name: "Apple salad bowl",
-		kcal: 500,
-		protein: 78,
-		carbs: 78,
-		fat: 78,
-		uploadedAt: "2026-06-14T09:00:00.000Z",
-	},
-	{
-		id: "meal-2",
-		thumbnail: heroImage,
-		name: "Apple salad bowl",
-		kcal: 500,
-		protein: 78,
-		carbs: 78,
-		fat: 78,
-		uploadedAt: "2026-06-14T09:00:00.000Z",
-	},
-	{
-		id: "meal-3",
-		thumbnail: analyzed,
-		name: "Apple salad bowl",
-		kcal: 500,
-		protein: 78,
-		carbs: 78,
-		fat: 78,
-		uploadedAt: "2026-06-14T09:00:00.000Z",
-	},
-	{
-		id: "meal-4",
-		thumbnail: foodDb,
-		name: "Greek yogurt parfait",
-		kcal: 320,
-		protein: 28,
-		carbs: 42,
-		fat: 7,
-		uploadedAt: "2026-06-13T15:20:00.000Z",
-	},
-	{
-		id: "meal-5",
-		thumbnail: heroImage,
-		name: "Grilled chicken plate",
-		kcal: 610,
-		protein: 52,
-		carbs: 48,
-		fat: 22,
-		uploadedAt: "2026-06-13T12:45:00.000Z",
-	},
-	{
-		id: "meal-6",
-		thumbnail: analyzed,
-		name: "Avocado egg toast",
-		kcal: 450,
-		protein: 20,
-		carbs: 40,
-		fat: 25,
-		uploadedAt: "2026-06-12T08:15:00.000Z",
-	},
-	{
-		id: "meal-7",
-		thumbnail: foodDb,
-		name: "Salmon rice bowl",
-		kcal: 680,
-		protein: 46,
-		carbs: 72,
-		fat: 24,
-		uploadedAt: "2026-06-11T19:10:00.000Z",
-	},
-	{
-		id: "meal-8",
-		thumbnail: heroImage,
-		name: "Protein smoothie",
-		kcal: 290,
-		protein: 32,
-		carbs: 24,
-		fat: 8,
-		uploadedAt: "2026-06-11T10:30:00.000Z",
-	},
-	{
-		id: "meal-9",
-		thumbnail: analyzed,
-		name: "Turkey sandwich",
-		kcal: 520,
-		protein: 36,
-		carbs: 58,
-		fat: 16,
-		uploadedAt: "2026-06-10T13:05:00.000Z",
-	},
-	{
-		id: "meal-10",
-		thumbnail: foodDb,
-		name: "Oatmeal with berries",
-		kcal: 380,
-		protein: 14,
-		carbs: 64,
-		fat: 9,
-		uploadedAt: "2026-06-10T07:50:00.000Z",
-	},
-];
-
-const initial = {
-	selectedDate: new Date().toISOString().slice(0, 10),
-	streak: 7,
-	consumed: 800,
-	meals: DUMMY_MEALS,
+	pendingMeals: Meal[];
+	recentMeals: Meal[];
+	mealsById: Record<string, Meal>;
+	addPendingMeal: (meal: Meal) => void;
+	removePendingMeal: (id: string) => void;
+	setPendingMealError: (id: string, error: string) => void;
+	setPendingMealProgress: (id: string, progress: number) => void;
+	setRecentMeals: (meals: Meal[]) => void;
+	upsertCachedMeals: (meals: Meal[]) => void;
+	removeCachedMeal: (id: string) => void;
 };
 
 export const useHomeStore = create<HomeState>()(
 	persist(
 		(set) => ({
-			...initial,
+			selectedDate: new Date().toISOString().slice(0, 10),
 			setSelectedDate: (selectedDate) => set({ selectedDate }),
+			streak: 7,
 			setStreak: (streak) => set({ streak }),
-			setConsumed: (consumed) => set({ consumed }),
+			pendingMeals: [],
+			recentMeals: [],
+			mealsById: {},
+			addPendingMeal: (meal) =>
+				set((state) => ({ pendingMeals: [meal, ...state.pendingMeals] })),
+			removePendingMeal: (id) =>
+				set((state) => ({
+					pendingMeals: state.pendingMeals.filter((m) => m.id !== id),
+				})),
+			setPendingMealError: (id, error) =>
+				set((state) => ({
+					pendingMeals: state.pendingMeals.map((m) =>
+						m.id === id ? { ...m, error } : m,
+					),
+				})),
+			setPendingMealProgress: (id, progress) =>
+				set((state) => ({
+					pendingMeals: state.pendingMeals.map((m) =>
+						m.id === id ? { ...m, progress } : m,
+					),
+				})),
+			setRecentMeals: (meals) =>
+				set((state) => ({
+					recentMeals: meals,
+					mealsById: {
+						...state.mealsById,
+						...Object.fromEntries(meals.map((meal) => [meal.id, meal])),
+					},
+				})),
+			upsertCachedMeals: (meals) =>
+				set((state) => {
+					const incomingById = Object.fromEntries(
+						meals.map((meal) => [meal.id, meal]),
+					);
+					const recentIds = new Set(state.recentMeals.map((meal) => meal.id));
+					const restoredMeals = meals.filter((meal) => !recentIds.has(meal.id));
+
+					return {
+						mealsById: {
+							...state.mealsById,
+							...incomingById,
+						},
+						recentMeals: [
+							...restoredMeals,
+							...state.recentMeals.map((meal) => incomingById[meal.id] ?? meal),
+						],
+					};
+				}),
+			removeCachedMeal: (id) =>
+				set((state) => {
+					const { [id]: _removed, ...mealsById } = state.mealsById;
+					return {
+						mealsById,
+						recentMeals: state.recentMeals.filter((meal) => meal.id !== id),
+						pendingMeals: state.pendingMeals.filter((meal) => meal.id !== id),
+					};
+				}),
 		}),
 		{
-			name: "snapbite-home",
+			name: "snapbite-home-cache",
+			storage: createJSONStorage(() => indexedDbStorage),
 			partialize: (state) => ({
 				selectedDate: state.selectedDate,
 				streak: state.streak,
-				consumed: state.consumed,
+				recentMeals: state.recentMeals,
+				mealsById: state.mealsById,
 			}),
 		},
 	),
