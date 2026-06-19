@@ -1,10 +1,20 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clear, set } from "idb-keyval";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import {
+	resetMealPhotoUploadSessionForTests,
+	startMealPhotoUploadSession,
+} from "@/lib/mealPhotoUploadSession";
 import ResultPage from "@/screens/Result.Page";
+import type { CapturedPhoto } from "@/store";
 import { useAnalysisStore, useCaptureStore, useHomeStore } from "@/store";
 
 const mocks = vi.hoisted(() => ({
@@ -56,6 +66,7 @@ async function seedTestPhotoBlob(id: string, mimeType = "image/webp") {
 async function resetStores() {
 	await clear();
 	localStorage.clear();
+	resetMealPhotoUploadSessionForTests();
 	useCaptureStore.setState(emptyCaptureState);
 	useAnalysisStore.getState().resetAnalysis();
 	useHomeStore.setState({
@@ -71,6 +82,12 @@ async function resetStores() {
 		etag: '"etag"',
 		httpEtag: '"etag"',
 	});
+}
+
+function startPreviewUploadSession(photos: CapturedPhoto[]) {
+	const uploadSession = startMealPhotoUploadSession(photos);
+	void uploadSession.promise.catch(() => undefined);
+	return uploadSession;
 }
 
 function renderResultPage() {
@@ -91,6 +108,7 @@ describe("ResultPage", () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+		resetMealPhotoUploadSessionForTests();
 	});
 
 	it("lets users move through all analyzed photos", async () => {
@@ -201,42 +219,71 @@ describe("ResultPage", () => {
 		expect(screen.getByText("0")).toBeInTheDocument();
 	});
 
-	it("uploads preview photos and creates a saved Convex meal when users finish the result", async () => {
+	it("creates a saved Convex meal from the preview-started upload when users finish the result", async () => {
 		const user = userEvent.setup();
 		await seedTestPhotoBlob("photo-1");
+		const photos = [createTestPhoto("photo-1", "blob:one")];
 		useCaptureStore.setState({
-			photos: [createTestPhoto("photo-1", "blob:one")],
+			photos,
 			note: "",
 		});
+		startPreviewUploadSession(photos);
 
 		renderResultPage();
 
 		await user.click(screen.getByRole("button", { name: "Done" }));
 
-		expect(mocks.uploadMealPhoto).toHaveBeenCalledTimes(1);
-		expect(mocks.createMeal).toHaveBeenCalledWith({
-			status: "saved",
-			photos: [
-				{
-					key: "users/demo-user/meals/2026-06-17/photo.webp",
-					contentType: "image/webp",
-					size: 3,
-					width: 640,
-					height: 480,
-					etag: '"etag"',
-				},
-			],
-			name: "Grilled salmon",
-			kcal: 621,
-			uploadedAt: expect.any(String),
-			foodItems: expect.any(Array),
-		});
 		expect(screen.getByText("Home")).toBeInTheDocument();
+		await waitFor(() => expect(mocks.uploadMealPhoto).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(mocks.createMeal).toHaveBeenCalledWith({
+				status: "saved",
+				photos: [
+					{
+						key: "users/demo-user/meals/2026-06-17/photo.webp",
+						contentType: "image/webp",
+						size: 3,
+						width: 640,
+						height: 480,
+						etag: '"etag"',
+					},
+				],
+				name: "Grilled salmon",
+				kcal: 621,
+				uploadedAt: expect.any(String),
+				foodItems: expect.any(Array),
+			}),
+		);
 	});
 
-	it("uploads preview photos and creates a draft Convex meal when users back out of the result", async () => {
+	it("creates a draft Convex meal from the preview-started upload when users back out of the result", async () => {
 		const user = userEvent.setup();
 		await seedTestPhotoBlob("photo-1");
+		const photos = [createTestPhoto("photo-1", "blob:one")];
+		useCaptureStore.setState({
+			photos,
+			note: "",
+		});
+		startPreviewUploadSession(photos);
+
+		renderResultPage();
+
+		await user.click(screen.getByRole("button", { name: /back to home/i }));
+
+		expect(screen.getByText("Home")).toBeInTheDocument();
+		await waitFor(() => expect(mocks.uploadMealPhoto).toHaveBeenCalledTimes(1));
+		await waitFor(() =>
+			expect(mocks.createMeal).toHaveBeenCalledWith(
+				expect.objectContaining({
+					status: "draft",
+					kcal: 621,
+				}),
+			),
+		);
+	});
+
+	it("does not start an upload from result actions when the preview upload session is missing", async () => {
+		const user = userEvent.setup();
 		useCaptureStore.setState({
 			photos: [createTestPhoto("photo-1", "blob:one")],
 			note: "",
@@ -246,31 +293,37 @@ describe("ResultPage", () => {
 
 		await user.click(screen.getByRole("button", { name: /back to home/i }));
 
-		expect(mocks.uploadMealPhoto).toHaveBeenCalledTimes(1);
-		expect(mocks.createMeal).toHaveBeenCalledWith(
-			expect.objectContaining({
-				status: "draft",
-				kcal: 621,
-			}),
-		);
-		expect(screen.getByText("Home")).toBeInTheDocument();
+		expect(mocks.uploadMealPhoto).not.toHaveBeenCalled();
+		expect(mocks.createMeal).not.toHaveBeenCalled();
+		expect(
+			screen.getByText("Photo upload was not started. Please submit again."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /back to home/i }),
+		).toBeInTheDocument();
 	});
 
-	it("stays on the result page when upload fails", async () => {
+	it("does not block result navigation when the preview-started upload fails", async () => {
 		const user = userEvent.setup();
 		mocks.uploadMealPhoto.mockRejectedValue(new Error("Upload failed"));
 		await seedTestPhotoBlob("photo-1");
+		const photos = [createTestPhoto("photo-1", "blob:one")];
 		useCaptureStore.setState({
-			photos: [createTestPhoto("photo-1", "blob:one")],
+			photos,
 			note: "",
 		});
+		startPreviewUploadSession(photos);
 
 		renderResultPage();
 
 		await user.click(screen.getByRole("button", { name: "Done" }));
 
+		expect(screen.getByText("Home")).toBeInTheDocument();
+		await waitFor(() => {
+			expect(useHomeStore.getState().pendingMeals[0]?.error).toBe(
+				"Upload failed",
+			);
+		});
 		expect(mocks.createMeal).not.toHaveBeenCalled();
-		expect(screen.getByText("Upload failed")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
 	});
 });

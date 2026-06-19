@@ -1,0 +1,8 @@
+[17:39:57 2026-06-19] FETCHING Version 2.43.2
+[17:39:57 2026-06-19] DOWNLOADING https://github.com/spicetify/cli/releases/download/v2.43.2/spicetify-2.43.2-linux-amd64.tar.gz
+[17:39:58 2026-06-19] EXTRACTING /home/rikato/.spicetify/spicetify.tar.gz
+[17:39:58 2026-06-19] SETTING EXECUTABLE PERMISSIONS TO /home/rikato/.spicetify/spicetify
+[17:39:58 2026-06-19] REMOVING /home/rikato/.spicetify/spicetify.tar.gz
+[17:39:58 2026-06-19] spicetify path already set in /home/rikato/.zshrc, continuing...
+[17:39:58 2026-06-19] spicetify v2.43.2 was installed successfully to /home/rikato/.spicetify
+[17:39:58 2026-06-19] Run 'spicetify --help' to get started
