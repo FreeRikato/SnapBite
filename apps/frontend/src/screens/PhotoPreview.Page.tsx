@@ -6,6 +6,7 @@ import { PhotoPreviewGallery } from "@/components/PhotoPreviewGallery";
 import { PhotoPreviewNoteButton } from "@/components/PhotoPreviewNoteButton";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { TextInputModal } from "@/components/TextInputModal";
+import { startMealPhotoUploadSession } from "@/lib/mealPhotoUploadSession";
 import { useCaptureStore } from "@/store";
 
 export default function PhotoPreviewPage() {
@@ -32,7 +33,14 @@ export default function PhotoPreviewPage() {
 	}
 
 	function handleSubmit() {
+		const submittedPhotos = photos.map((photo) => ({ ...photo }));
 		navigate("/clarify-loading");
+
+		window.setTimeout(() => {
+			if (submittedPhotos.length === 0) return;
+			const uploadSession = startMealPhotoUploadSession(submittedPhotos);
+			void uploadSession.promise.catch(() => undefined);
+		}, 0);
 	}
 
 	return (

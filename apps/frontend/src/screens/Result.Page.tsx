@@ -12,10 +12,13 @@ import { MealDoneFooter } from "@/components/MealDoneFooter";
 import { MealHeroHeader } from "@/components/MealHeroHeader";
 import { MealPhotoHero } from "@/components/MealPhotoHero";
 import { ANALYZED_CALORIES, NEW_FOOD_ITEM_EMOJI } from "@/constants/analysis";
-import { getMealPhotoUrl, uploadMealPhoto } from "@/lib/mealPhotoUpload";
+import { getMealPhotoUrl } from "@/lib/mealPhotoUpload";
+import {
+	clearActiveMealPhotoUploadSession,
+	getActiveMealPhotoUploadSession,
+	type MealPhotoUploadSession,
+} from "@/lib/mealPhotoUploadSession";
 import type { MealPhotoRecord } from "@/lib/mealRecords";
-import { previewUrlToFile } from "@/lib/mealRecords";
-import { cacheMealPhotoBlob } from "@/lib/photoBlobStore";
 import type { CapturedPhoto } from "@/store";
 import { useAnalysisStore, useCaptureStore, useHomeStore } from "@/store";
 import type { FoodItem } from "@/types/analysis";
@@ -96,6 +99,7 @@ async function runBackgroundUpload({
 	pendingId,
 	status,
 	capturedPhotos,
+	uploadSession,
 	foodItems,
 	kcal,
 	mealDate,
@@ -105,6 +109,7 @@ async function runBackgroundUpload({
 	pendingId: string;
 	status: "saved" | "draft";
 	capturedPhotos: CapturedPhoto[];
+	uploadSession: MealPhotoUploadSession | null;
 	foodItems: FoodItem[];
 	kcal: number;
 	mealDate: string;
@@ -116,52 +121,14 @@ async function runBackgroundUpload({
 		pendingId,
 		status,
 		photoCount: capturedPhotos.length,
+		uploadSessionId: uploadSession?.id ?? null,
 	});
 
 	try {
-		const { setPendingMealProgress, removePendingMeal } =
-			useHomeStore.getState();
+		const { removePendingMeal } = useHomeStore.getState();
+		const uploadedPhotos = uploadSession ? await uploadSession.promise : [];
 
-		const files = await Promise.all(
-			capturedPhotos.map((photo, index) =>
-				previewUrlToFile(photo, index, debugId),
-			),
-		);
-
-		const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
-		const loadedBytes = new Array(files.length).fill(0) as number[];
-
-		function updateProgress() {
-			const loaded = loadedBytes.reduce((s, l) => s + l, 0);
-			setPendingMealProgress(
-				pendingId,
-				totalBytes > 0 ? (loaded / totalBytes) * 0.9 : 0,
-			);
-		}
-
-		const uploadedPhotos = await Promise.all(
-			files.map(async (file, index) => {
-				const upload = await uploadMealPhoto({
-					file,
-					debugId: `${debugId}:photo-${index + 1}`,
-					onProgress: (loaded) => {
-						loadedBytes[index] = loaded;
-						updateProgress();
-					},
-				});
-				await cacheMealPhotoBlob(upload.key, file);
-				return {
-					key: upload.key,
-					contentType: file.type || "image/webp",
-					size: file.size,
-					width: capturedPhotos[index]?.width ?? null,
-					height: capturedPhotos[index]?.height ?? null,
-					etag: upload.etag ?? upload.httpEtag ?? null,
-				} satisfies MealPhotoRecord;
-			}),
-		);
-
-		setPendingMealProgress(pendingId, 0.92);
+		useHomeStore.getState().setPendingMealProgress(pendingId, 0.92);
 
 		const mealId = await withTimeout(
 			createMeal({
@@ -202,10 +169,32 @@ async function runBackgroundUpload({
 
 		logResult(debugId, "background upload complete", { pendingId });
 		removePendingMeal(pendingId);
+
+		const currentPhotos = useCaptureStore.getState().photos;
+		const currentPhotoSignature = currentPhotos
+			.map((photo) => photo.blobKey)
+			.join("|");
+		const uploadedPhotoSignature = capturedPhotos
+			.map((photo) => photo.blobKey)
+			.join("|");
+
+		if (currentPhotoSignature === uploadedPhotoSignature) {
+			await useCaptureStore.getState().clearPhotos();
+			if (status === "saved") {
+				useAnalysisStore.getState().resetAnalysis();
+			}
+		}
+
+		if (uploadSession) {
+			clearActiveMealPhotoUploadSession(uploadSession.id);
+		}
 	} catch (err) {
 		logResultError(debugId, "background upload failed", err);
 		const message = err instanceof Error ? err.message : "Upload failed";
 		useHomeStore.getState().setPendingMealError(pendingId, message);
+		if (uploadSession) {
+			clearActiveMealPhotoUploadSession(uploadSession.id);
+		}
 		return message;
 	}
 
@@ -215,12 +204,10 @@ async function runBackgroundUpload({
 export default function ResultPage() {
 	const navigate = useNavigate();
 	const photos = useCaptureStore((state) => state.photos);
-	const clearPhotos = useCaptureStore((state) => state.clearPhotos);
 	const foodItems = useAnalysisStore((state) => state.foodItems);
 	const addFoodItem = useAnalysisStore((state) => state.addFoodItem);
 	const updateFoodItem = useAnalysisStore((state) => state.updateFoodItem);
 	const removeFoodItem = useAnalysisStore((state) => state.removeFoodItem);
-	const resetAnalysis = useAnalysisStore((state) => state.resetAnalysis);
 	const createMeal = useMutation(api.meals.create);
 	const calorieInputRef = useRef<HTMLInputElement>(null);
 
@@ -282,7 +269,7 @@ export default function ResultPage() {
 		);
 	}
 
-	async function dispatchAndNavigate(status: "saved" | "draft") {
+	function dispatchAndNavigate(status: "saved" | "draft") {
 		if (firedRef.current) return;
 		firedRef.current = true;
 		setIsSaving(true);
@@ -314,27 +301,37 @@ export default function ResultPage() {
 
 		const snapshotPhotos = [...photos];
 		const snapshotFoodItems = [...foodItems];
-		const error = await runBackgroundUpload({
-			pendingId,
-			status,
-			capturedPhotos: snapshotPhotos,
-			foodItems: snapshotFoodItems,
-			kcal,
-			mealDate,
-			mealTime,
-			createMeal,
-		});
+		const uploadSession =
+			snapshotPhotos.length > 0 ? getActiveMealPhotoUploadSession() : null;
 
-		if (error) {
+		if (snapshotPhotos.length > 0 && !uploadSession) {
 			useHomeStore.getState().removePendingMeal(pendingId);
-			setUploadError(error);
+			setUploadError("Photo upload was not started. Please submit again.");
 			setIsSaving(false);
 			firedRef.current = false;
 			return;
 		}
 
-		clearPhotos();
-		if (status === "saved") resetAnalysis();
+		const unsubscribeProgress = uploadSession
+			? uploadSession.subscribeProgress((progress) => {
+					useHomeStore
+						.getState()
+						.setPendingMealProgress(pendingId, Math.min(0.9, progress * 0.9));
+				})
+			: undefined;
+
+		void runBackgroundUpload({
+			pendingId,
+			status,
+			capturedPhotos: snapshotPhotos,
+			uploadSession,
+			foodItems: snapshotFoodItems,
+			kcal,
+			mealDate,
+			mealTime,
+			createMeal,
+		}).finally(() => unsubscribeProgress?.());
+
 		navigate("/");
 	}
 
