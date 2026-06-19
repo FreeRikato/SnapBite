@@ -216,7 +216,9 @@ export default function MealPreviewPage() {
 
 		const photoKeys = Array.from(
 			new Set([
-				...(mealRecord?.photos.map((photo) => photo.key) ?? meal.photoKeys ?? []),
+				...(mealRecord?.photos.map((photo) => photo.key) ??
+					meal.photoKeys ??
+					[]),
 				mealRecord?.thumbnailKey ?? meal.thumbnailKey,
 			]),
 		).filter((key): key is string => Boolean(key));

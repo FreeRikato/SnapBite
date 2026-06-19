@@ -60,7 +60,8 @@ export default function HomePage() {
 		() => recentMealRecords?.map(mealRecordToMeal) ?? [],
 		[recentMealRecords],
 	);
-	const meals = recentMealRecords === undefined ? cachedRecentMeals : freshMeals;
+	const meals =
+		recentMealRecords === undefined ? cachedRecentMeals : freshMeals;
 	const [weekStart, setWeekStart] = useState(() => startOfWeek(today));
 	const [weekTransitionDirection, setWeekTransitionDirection] =
 		useState<WeekTransitionDirection>("next");
@@ -108,7 +109,9 @@ export default function HomePage() {
 				return (
 					current &&
 					(meal.thumbnail !== current.thumbnail ||
-						meal.photos.some((photo, photoIndex) => photo !== current.photos[photoIndex]))
+						meal.photos.some(
+							(photo, photoIndex) => photo !== current.photos[photoIndex],
+						))
 				);
 			});
 

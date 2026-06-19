@@ -5,11 +5,15 @@ import worker from '../src/index';
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const allowedOrigin = 'https://snapbite.aravinthan.space';
 
-type UploadResponse = {
-	key: string;
-	size: number;
-	etag: string;
-	httpEtag: string;
+type UploadUrlResponse = {
+key: string;
+uploadUrl: string;
+method: 'PUT';
+headers: {
+'Content-Type': string;
+};
+expiresIn: number;
+maxBytes: number;
 };
 
 async function fetchWorker(request: Request): Promise<Response> {
@@ -76,58 +80,77 @@ describe('meal photo worker', () => {
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
 	});
 
-	it('uploads and reads an image through R2', async () => {
-		const imageBytes = new Uint8Array([1, 2, 3, 4]);
-		const uploadResponse = await fetchWorker(
-			new IncomingRequest('http://example.com/upload', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'image/webp',
-					Origin: allowedOrigin,
-					'X-User-Id': 'user@example.com',
-				},
-				body: imageBytes,
-			}),
-		);
+it('uploads and reads an image through R2', async () => {
+const imageBytes = new Uint8Array([1, 2, 3, 4]);
 
-		expect(uploadResponse.status).toBe(201);
-		expect(uploadResponse.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
+const uploadUrlResponse = await fetchWorker(
+new IncomingRequest('http://example.com/upload-url', {
+method: 'POST',
+headers: {
+'Content-Type': 'application/json',
+Origin: allowedOrigin,
+'X-User-Id': 'user@example.com',
+},
+body: JSON.stringify({
+contentType: 'image/webp',
+size: imageBytes.byteLength,
+}),
+}),
+);
 
-		const upload = (await uploadResponse.json()) as UploadResponse;
-		expect(upload.size).toBe(imageBytes.byteLength);
-		expect(upload.key).toMatch(/^users\/user_example_com\/meals\/\d{4}-\d{2}-\d{2}\/[a-f0-9-]+\.webp$/);
-		expect(upload.etag).toBeTruthy();
-		expect(upload.httpEtag).toBeTruthy();
+expect(uploadUrlResponse.status).toBe(201);
+expect(uploadUrlResponse.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
 
-		const imageResponse = await fetchWorker(
-			new IncomingRequest(`http://example.com/image?key=${encodeURIComponent(upload.key)}`, {
-				headers: {
-					Origin: allowedOrigin,
-				},
-			}),
-		);
+const upload = (await uploadUrlResponse.json()) as UploadUrlResponse;
+expect(upload.key).toMatch(/^users\/user_example_com\/meals\/\d{4}-\d{2}-\d{2}\/[a-f0-9-]+\.webp$/);
+expect(upload.method).toBe('PUT');
+expect(upload.headers['Content-Type']).toBe('image/webp');
+expect(upload.expiresIn).toBeGreaterThan(0);
+expect(upload.maxBytes).toBeGreaterThanOrEqual(imageBytes.byteLength);
 
-		expect(imageResponse.status).toBe(200);
-		expect(imageResponse.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
-		expect(imageResponse.headers.get('Content-Type')).toBe('image/webp');
-		expect(new Uint8Array(await imageResponse.arrayBuffer())).toEqual(imageBytes);
-	});
+const putResponse = await SELF.fetch(upload.uploadUrl, {
+method: 'PUT',
+headers: upload.headers,
+body: imageBytes,
+});
 
-	it('rejects unsupported upload content types', async () => {
-		const response = await fetchWorker(
-			new IncomingRequest('http://example.com/upload', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'text/plain',
-					Origin: allowedOrigin,
-				},
-				body: 'not an image',
-			}),
-		);
+expect(putResponse.status).toBe(201);
+const httpEtag = putResponse.headers.get('ETag');
+expect(httpEtag).toBeTruthy();
 
-		expect(response.status).toBe(415);
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
-	});
+const imageResponse = await fetchWorker(
+new IncomingRequest(`http://example.com/image?key=${encodeURIComponent(upload.key)}`, {
+headers: {
+Origin: allowedOrigin,
+},
+}),
+);
+
+expect(imageResponse.status).toBe(200);
+expect(imageResponse.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
+expect(imageResponse.headers.get('Content-Type')).toBe('image/webp');
+expect(imageResponse.headers.get('ETag')).toBe(httpEtag);
+expect(new Uint8Array(await imageResponse.arrayBuffer())).toEqual(imageBytes);
+});
+
+it('rejects unsupported upload content types', async () => {
+const response = await fetchWorker(
+new IncomingRequest('http://example.com/upload-url', {
+method: 'POST',
+headers: {
+'Content-Type': 'application/json',
+Origin: allowedOrigin,
+},
+body: JSON.stringify({
+contentType: 'text/plain',
+size: 11,
+}),
+}),
+);
+
+expect(response.status).toBe(415);
+expect(response.headers.get('Access-Control-Allow-Origin')).toBe(allowedOrigin);
+});
 
 	it('rejects unsafe image keys', async () => {
 		const response = await fetchWorker(

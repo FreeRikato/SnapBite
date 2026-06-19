@@ -95,17 +95,21 @@ export const useCaptureStore = create<CaptureState>()(
 					}),
 				);
 
-				set({ photos: hydrated.filter((photo): photo is CapturedPhoto => !!photo) });
+				set({
+					photos: hydrated.filter((photo): photo is CapturedPhoto => !!photo),
+				});
 			},
 		}),
 		{
 			name: "snapbite-capture",
 			storage: createJSONStorage(() => indexedDbStorage),
 			partialize: (state) => ({
-				photos: state.photos.map(({ previewObjectUrl: _previewObjectUrl, ...photo }) => ({
-					...photo,
-					previewObjectUrl: "",
-				})),
+				photos: state.photos.map(
+					({ previewObjectUrl: _previewObjectUrl, ...photo }) => ({
+						...photo,
+						previewObjectUrl: "",
+					}),
+				),
 			}),
 			onRehydrateStorage: () => (state) => {
 				void state?.hydratePhotoPreviews();

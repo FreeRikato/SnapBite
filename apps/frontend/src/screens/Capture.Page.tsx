@@ -5,10 +5,7 @@ import { useNavigate } from "react-router";
 import { CaptureCameraPreview } from "@/components/CaptureCameraPreview";
 import { CaptureControls } from "@/components/CaptureControls";
 import { CaptureHeader } from "@/components/CaptureHeader";
-import {
-	createPreviewUrl,
-	saveCapturePhotoBlob,
-} from "@/lib/photoBlobStore";
+import { createPreviewUrl, saveCapturePhotoBlob } from "@/lib/photoBlobStore";
 import { resizeMealPhoto } from "@/lib/resizeMealPhoto";
 import type { CapturedPhoto } from "@/store";
 import { useCaptureStore } from "@/store";
@@ -49,7 +46,10 @@ function canvasToBlob(canvas: HTMLCanvasElement) {
 	});
 }
 
-async function preparePhotoFile(file: File, id: string): Promise<CapturedPhoto> {
+async function preparePhotoFile(
+	file: File,
+	id: string,
+): Promise<CapturedPhoto> {
 	const resized = await resizeMealPhoto(file);
 	const blobKey = `capture-${id}`;
 	await saveCapturePhotoBlob(blobKey, resized.file);

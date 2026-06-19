@@ -1,12 +1,12 @@
 import type { Doc } from "@repo/convex/convex/_generated/dataModel";
 
 import analyzedFallback from "@/assets/examples/analyzed.png";
+import { getMealPhotoUrl } from "@/lib/mealPhotoUpload";
 import {
 	getCachedMealPhotoObjectUrl,
 	getCapturePhotoBlob,
 	hydrateMealPhotoObjectUrl,
 } from "@/lib/photoBlobStore";
-import { getMealPhotoUrl } from "@/lib/mealPhotoUpload";
 import type { CapturedPhoto, Meal } from "@/store";
 
 export type MealPhotoRecord = {
